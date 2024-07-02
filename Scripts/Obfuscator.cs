@@ -112,7 +112,7 @@ namespace Kanna.Protecc
                     throw new OperationCanceledException();
                 }
                 var o = gobj;
-                var gameObjectName = o.name.Trim() + "_Obfuscated";
+                var gameObjectName = $"{o.name.Trim()}_Obfuscated";
                 obj = Object.Instantiate(o);
                 obj.name = gameObjectName;
                 obj.SetActive(true);
@@ -229,7 +229,8 @@ namespace Kanna.Protecc
                 {
                     if (animator.runtimeAnimatorController == null) continue;
 
-                    var excluded = ((AnimatorController)animator.runtimeAnimatorController).name.ToLower().Contains("gogo") || root.excludeObjectNames.Any(z => z == (AnimatorController)animator.runtimeAnimatorController);
+                    var excluded = ((AnimatorController)animator.runtimeAnimatorController).name.ToLower().Contains("gogo") || root.excludeObjectNames.Any(z => z == (AnimatorController)animator.runtimeAnimatorController) ||
+                                   root.excludeObjectNames.Any(z => z == (AnimatorController)animator.runtimeAnimatorController);
 
                     if (excluded)
                     {
@@ -291,16 +292,17 @@ namespace Kanna.Protecc
                 {
                     throw new OperationCanceledException();
                 }
-                var animators = obj.GetComponentsInChildren<Animator>(true);
+                var animators = obj.GetComponentsInChildren<Animator>(true).Where(o => o.avatar != null && o.avatar.isHuman);
                 var enumValues = Enum.GetValues(typeof(HumanBodyBones));
-                foreach (HumanBodyBones boneId in enumValues)
+
+                foreach (var a in animators)
                 {
-                    if (boneId == HumanBodyBones.LastBone) continue;
-                    foreach (var a in animators)
+                    foreach (HumanBodyBones boneId in enumValues)
                     {
+                        if (boneId == HumanBodyBones.LastBone) continue;
                         var boneTransform = a.GetBoneTransform(boneId);
                         if (boneTransform == null) continue;
-
+                        
                         AddAllParent(obj, a, boneTransform);
                     }
                 }
@@ -313,7 +315,6 @@ namespace Kanna.Protecc
                     {
                         _excludeNameSet.Add(objectName.name);
                     }
-
 
                     KannaLogger.LogToFile($"Getting Every Transform Recursively..", KannaProteccRoot.LogLocation);
                     var children = obj.GetComponentsInChildren<Transform>(true).Where(t => t != obj.transform).ToList();
@@ -332,6 +333,11 @@ namespace Kanna.Protecc
                     for (var index = 0; index < ToRename.Length; index++)
                     {
                         var childObject = ToRename[index];
+
+                        if (childObject.GetComponents<Component>().Any(z => z.GetType().Name.Contains("ModularAvatar"))) // These depend on object name
+                        {
+                            continue;
+                        }
 
                         if (ProgressBar($"Obfuscating {index + 1}/{ToRename.Length} Transform Names", 10))
                         {
@@ -463,6 +469,11 @@ namespace Kanna.Protecc
 
             foreach (var child in AllChildren)
             {
+                if (child.GetComponents<Component>().Any(z => z.GetType().Name.Contains("ModularAvatar"))) // These depend on object index
+                {
+                    continue;
+                }
+                
                 child.SetSiblingIndex(UnityEngine.Random.Range(0, child.parent.childCount));
             }
         }
@@ -480,8 +491,7 @@ namespace Kanna.Protecc
         {
             var gameObjectName = bone.gameObject.name;
 
-            if (!_excludeNameSet.Contains(gameObjectName))
-                _excludeNameSet.Add(gameObjectName);
+            _excludeNameSet.Add(gameObjectName);
         }
 
 #if VRC_SDK_VRCSDK3
@@ -518,8 +528,8 @@ namespace Kanna.Protecc
                     continue;
                 }
 
-                var newName = Utilities.GenerateRandomUniqueName(false, true);
-                while (_parameterDic.ContainsKey(newName)) newName = Utilities.GenerateRandomUniqueName(false, true);
+                var newName = Utilities.GenerateRandomUniqueName(false);
+                while (_parameterDic.ContainsKey(newName)) newName = Utilities.GenerateRandomUniqueName(false);
 
                 if (parameter.name.Contains("BitKey"))
                 {
@@ -570,10 +580,10 @@ namespace Kanna.Protecc
 
             while ((VRCExpressionParameters.MAX_PARAMETER_COST - (expressionParameters.CalcTotalCost() + AmountToReserveForOtherThings)) > 0)
             {
-                var newName = Utilities.GenerateRandomUniqueName(false, true);
+                var newName = Utilities.GenerateRandomUniqueName(false);
 
                 while (_parameterDic.ContainsKey(newName))
-                    newName = Utilities.GenerateRandomUniqueName(false, true);
+                    newName = Utilities.GenerateRandomUniqueName(false);
 
                 parameters.Add(new VRCExpressionParameters.Parameter
                 {
@@ -659,8 +669,8 @@ namespace Kanna.Protecc
                 }
                 else if (Array.FindIndex(SkipParameterNames, value => value == t.name) == -1 && root.excludeParamNames.All(o => !Regex.IsMatch(t.name.RemoveAllPhysBone(), o)) && !IgnoredParams.Contains(t.name.RemoveAllPhysBone()))
                 {
-                    var newName = Utilities.GenerateRandomUniqueName(false, true);
-                    while (_parameterDic.ContainsKey(newName)) newName = Utilities.GenerateRandomUniqueName(false, true);
+                    var newName = Utilities.GenerateRandomUniqueName(false);
+                    while (_parameterDic.ContainsKey(newName)) newName = Utilities.GenerateRandomUniqueName(false);
 
                     mapping.RenamedValues.Add(($"Animator Parameter", t.name.RemoveAllPhysBone(), newName));
                     _parameterDic.Add(t.name.RemoveAllPhysBone(), newName);
@@ -704,7 +714,7 @@ namespace Kanna.Protecc
                 {
                     t.name = _parameterDic[t.name.RemoveAllPhysBone()] + t.name.GetPhysBoneEnding();
                 }
-                else if (t.name.Contains("BitKey"))
+                else if (t.name.StartsWith("BitKey"))
                 {
                     var newName = root.ParameterRenamedValues[t.name];
 
@@ -975,9 +985,9 @@ namespace Kanna.Protecc
             string newPath;
             if (!_filePathDic.ContainsKey(originalPath)) // Gen File
             {
-                newPath = root.path + "/" + GUID.Generate() + "." + ext;
+                newPath = $"{root.path}/{GUID.Generate()}.{ext}";
                 while (!string.IsNullOrEmpty(AssetDatabase.AssetPathToGUID(newPath)))
-                    newPath = root.path + "/" + GUID.Generate() + ext;
+                    newPath = $"{root.path}/{GUID.Generate()}{ext}";
 
                 mapping.RenamedValues.Add(($"Asset: {ext}", Path.GetFileNameWithoutExtension(originalPath), Path.GetFileNameWithoutExtension(newPath)));
 
@@ -1044,14 +1054,16 @@ namespace Kanna.Protecc
 
 public static class ObfuscatorExt
 {
+    private static string[] PhysBoneParameters = new[] { "_IsGrabbed", "_IsPosed", "_Angle", "_Stretch", "_Squish" };
+    
     public static string RemoveAllPhysBone(this string text)
     {
-        return text.RemoveAll(new[] { "_IsGrabbed", "_IsPosed", "_Angle", "_Stretch", "_Squish" });
+        return text.RemoveAll(PhysBoneParameters);
     }
 
     public static string GetPhysBoneEnding(this string text)
     {
-        return text.GetEndingMatch(new[] { "_IsGrabbed", "_IsPosed", "_Angle", "_Stretch", "_Squish" });
+        return text.GetEndingMatch(PhysBoneParameters);
     }
 
     public static string RemoveAll(this string text, IEnumerable<string> words)

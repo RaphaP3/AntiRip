@@ -11,6 +11,7 @@ using System.Collections;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Debug = UnityEngine.Debug;
 using Object = UnityEngine.Object;
@@ -30,52 +31,42 @@ namespace Kanna.Protecc
     {
         public static KannaProteccRoot Instance;
 
-#if UNITY_EDITOR
+        #if UNITY_EDITOR
         public Obfuscator obfuscator = new Obfuscator();
-#endif
+        #endif
 
-        [SerializeField]
-        public bool IsProtected;
+        [SerializeField] public bool IsProtected;
 
-        [Header("Set high enough so your encrypted mesh is visuall. Default = .5")]
-        [Range(.6f, 5f)]
-        [SerializeField]
+        [Header("Set high enough so your encrypted mesh is visuall. Default = .5")] [Range(.6f, 5f)] [SerializeField]
         float _distortRatio = 5f;
 
-        [Header("Ensure this is pointing to your LocalAvatarData folder!")]
-        [SerializeField]
+        [Header("Ensure this is pointing to your LocalAvatarData folder!")] [SerializeField]
         string _vrcSavedParamsPath = string.Empty;
 
-        [Header("Materials in this list will also be locked and injected.")]
-        [SerializeField]
+        [Header("Materials in this list will also be locked and injected.")] [SerializeField]
         public List<Material> m_AdditionalMaterials = new List<Material>();
 
-        [Header("Materials in this list will be ignored.")]
-        [SerializeField]
+        [Header("Materials in this list will be ignored.")] [SerializeField]
         public List<Material> m_IgnoredMaterials = new List<Material>();
 
-        [SerializeField]
-        public bool[] _bitKeys = new bool[32];
+        [SerializeField] public bool[] _bitKeys = new bool[32];
 
         public readonly string pathPrefix = "Assets/Kanna/Obfuscated Files/";
 
         public static readonly string LogLocation = "KannaProteccLog.html";
 
-        [SerializeField]
-        public string path = "";
+        [SerializeField] public string path = "";
 
-        [SerializeField]
-        public bool disableObjectNameObfuscation = false;
+        [SerializeField] public bool disableObjectNameObfuscation = false;
 
-        [SerializeField]
-        public List<Object> excludeObjectNames = new List<Object>();
+        [SerializeField] public List<Object> excludeObjectNames = new List<Object>();
 
-        [SerializeField]
-        public List<string> excludeParamNames = new List<string>();
+        [SerializeField] public List<string> excludeParamNames = new List<string>();
 
         public enum AnimLayerType
         {
             Base = 0,
+
             //Deprecated0 = 1,
             Additive = 2,
             Gesture = 3,
@@ -86,14 +77,11 @@ namespace Kanna.Protecc
             IKPose = 8,
         }
 
-        [SerializeField]
-        public List<AnimLayerType> excludeAnimatorLayers = new List<AnimLayerType>();
+        [SerializeField] public List<AnimLayerType> excludeAnimatorLayers = new List<AnimLayerType>();
 
-        [SerializeField]
-        public StringStringSerializableDictionary ParameterRenamedValues = new StringStringSerializableDictionary();
+        [SerializeField] public StringStringSerializableDictionary ParameterRenamedValues = new StringStringSerializableDictionary();
 
-        [SerializeField]
-        public int SelectedLanguage = -1;
+        [SerializeField] public int SelectedLanguage = -1;
 
         public string GetBitKeyName(int id, int LimitRenameLength = -1)
         {
@@ -102,7 +90,7 @@ namespace Kanna.Protecc
 
         StringBuilder _sb = new StringBuilder();
 
-#if UNITY_EDITOR
+        #if UNITY_EDITOR
         readonly KannaProteccController _KannaProteccController = new KannaProteccController();
 
         public void ValidateAnimatorController(GameObject obj, AnimatorController controller)
@@ -163,177 +151,184 @@ namespace Kanna.Protecc
         {
             var existingMeshPath = AssetDatabase.GetAssetPath(mesh);
 
-            return !string.IsNullOrEmpty(existingMeshPath) && !existingMeshPath.Contains("unity default resources");
+            return !string.IsNullOrEmpty(existingMeshPath) && !existingMeshPath.Contains("unity default resources") && !existingMeshPath.Contains("_builtin_");
         }
 
         public void EncryptAvatar()
         {
-            if (ParameterRenamedValues.Count == 0 && !string.IsNullOrEmpty(GetComponent<PipelineManager>()?.blueprintId))
+            try
             {
-                if (EditorUtility.DisplayDialog("Error!", "Do Not Encrypt A Previously Non-Encrypted Avatar That Was Uploaded! Detach The Blueprint ID And Upload This To A New One!\r\nBypassing This Can Lead To Rippers Using A Older Non-Encrypted Version Of Your Avatar! Only Bypass If You Know It Was Never Uploaded Non-Encrypted!", "Okay", "Bypass Warning"))
+                if (ParameterRenamedValues.Count == 0 && !string.IsNullOrEmpty(GetComponent<PipelineManager>()?.blueprintId))
                 {
-                    return;
-                }
-            }
-
-            var descriptor = gameObject.GetComponent<VRCAvatarDescriptor>();
-
-            if ((VRCExpressionParameters.MAX_PARAMETER_COST - descriptor.expressionParameters.CalcTotalCost()) is var freespace && freespace < 32)
-            {
-                if (EditorUtility.DisplayDialog("Error!", $"You Do Not Have 32 Bits Of Free Space In Your Expression Parameters!\r\nWould You Like To Use {freespace} Keys? Note This IS A SECURITY RISK.{(freespace < 16 ? " Less Than 16 Is Especially Insecure." : "")}", "Cancel", "I Understand The Danger"))
-                {
-                    return;
-                }
-
-                _bitKeys = new bool[freespace];
-                GenerateNewKey();
-            }
-
-            if (File.Exists(LogLocation))
-            {
-                File.Delete(LogLocation); // Remove Old Log
-                KannaLogger.LogCache.Clear();
-            }
-
-            Utilities.ResetRandomizer();
-
-            var newName = gameObject.name.Trim() + "_Encrypted";
-
-            // delete old GO, do as such in case its disabled
-            var scene = SceneManager.GetActiveScene();
-            var sceneRoots = scene.GetRootGameObjects();
-            foreach (var oldGameObject in sceneRoots)
-            {
-                if (oldGameObject.name.Trim() == newName)
-                {
-                    KannaLogger.LogToFile($"Destroying Old Encrypted Object: {newName}", LogLocation);
-                    DestroyImmediate(oldGameObject);
-                }
-            }
-
-            var encodedGameObject = Instantiate(gameObject);
-            encodedGameObject.name = newName;
-            encodedGameObject.SetActive(true);
-
-            var data = new KannaProteccData(_bitKeys.Length);
-            var decodeShader = KannaProteccMaterial.GenerateDecodeShader(data, _bitKeys);
-
-            KannaLogger.LogToFile($"Initialized, Getting All Meshes..", LogLocation);
-
-            var meshFilters = encodedGameObject.GetComponentsInChildren<MeshFilter>(true).Select(o => (o, o.gameObject.activeSelf));
-            var skinnedMeshRenderers = encodedGameObject.GetComponentsInChildren<SkinnedMeshRenderer>(true).Select(o => (o, o.gameObject.activeSelf));
-
-            KannaLogger.LogToFile($"Got All Meshes, Encrypting Additional Materials..", LogLocation);
-
-            EncryptMaterials(null, m_AdditionalMaterials.ToArray(), decodeShader, m_IgnoredMaterials);
-
-            KannaLogger.LogToFile($"Additional Materials Encrypted, Processing MeshFilters..", LogLocation);
-
-            // Do encrypting
-            foreach (var meshFilter in meshFilters)
-            {
-                if (meshFilter.o.GetComponent<MeshRenderer>() != null)
-                {
-                    meshFilter.o.gameObject.SetActive(true);
-                    var materials = meshFilter.o.GetComponent<MeshRenderer>().sharedMaterials;
-                    if (EncryptMaterials(meshFilter.o.sharedMesh, materials, decodeShader, m_IgnoredMaterials))
+                    if (EditorUtility.DisplayDialog("Error!", "Do Not Encrypt A Previously Non-Encrypted Avatar That Was Uploaded! Detach The Blueprint ID And Upload This To A New One!\r\nBypassing This Can Lead To Rippers Using A Older Non-Encrypted Version Of Your Avatar! Only Bypass If You Know It Was Never Uploaded Non-Encrypted!", "Okay", "Bypass Warning"))
                     {
-                        meshFilter.o.sharedMesh = KannaProteccMesh.EncryptMesh(meshFilter.o.GetComponent<MeshRenderer>(), meshFilter.o.sharedMesh, _distortRatio, data, m_IgnoredMaterials) ?? meshFilter.o.sharedMesh;
+                        return;
+                    }
+                }
+
+                var descriptor = gameObject.GetComponent<VRCAvatarDescriptor>();
+
+                if ((VRCExpressionParameters.MAX_PARAMETER_COST - descriptor.expressionParameters.CalcTotalCost()) is var freespace && freespace < 32)
+                {
+                    if (EditorUtility.DisplayDialog("Error!", $"You Do Not Have 32 Bits Of Free Space In Your Expression Parameters!\r\nWould You Like To Use {freespace} Keys? Note This IS A SECURITY RISK.{(freespace < 16 ? " Less Than 16 Is Especially Insecure." : "")}", "Cancel", "I Understand The Danger"))
+                    {
+                        return;
+                    }
+
+                    _bitKeys = new bool[freespace];
+                    GenerateNewKey();
+                }
+
+                if (File.Exists(LogLocation))
+                {
+                    File.Delete(LogLocation); // Remove Old Log
+                    KannaLogger.LogCache.Clear();
+                }
+
+                Utilities.ResetRandomizer();
+
+                var newName = $"{gameObject.name.Trim()}_Encrypted";
+
+                // delete old GO, do as such in case its disabled
+                var scene = SceneManager.GetActiveScene();
+                var sceneRoots = scene.GetRootGameObjects();
+                foreach (var oldGameObject in sceneRoots)
+                {
+                    if (oldGameObject.name.Trim() == newName)
+                    {
+                        KannaLogger.LogToFile($"Destroying Old Encrypted Object: {newName}", LogLocation);
+                        DestroyImmediate(oldGameObject);
+                    }
+                }
+
+                var encodedGameObject = Instantiate(gameObject);
+                encodedGameObject.name = newName;
+                encodedGameObject.SetActive(true);
+
+                var data = new KannaProteccData(_bitKeys.Length);
+                var decodeShader = KannaProteccMaterial.GenerateDecodeShader(data, _bitKeys);
+
+                KannaLogger.LogToFile($"Initialized, Getting All Meshes..", LogLocation);
+
+                var meshFilters = encodedGameObject.GetComponentsInChildren<MeshFilter>(true).Select(o => (o, o.gameObject.activeSelf));
+                var skinnedMeshRenderers = encodedGameObject.GetComponentsInChildren<SkinnedMeshRenderer>(true).Select(o => (o, o.gameObject.activeSelf));
+
+                KannaLogger.LogToFile($"Got All Meshes, Encrypting Additional Materials..", LogLocation);
+
+                EncryptMaterials(null, m_AdditionalMaterials.ToArray(), decodeShader, m_IgnoredMaterials);
+
+                KannaLogger.LogToFile($"Additional Materials Encrypted, Processing MeshFilters..", LogLocation);
+
+                // Do encrypting
+                foreach (var meshFilter in meshFilters)
+                {
+                    if (meshFilter.o.GetComponent<MeshRenderer>() != null)
+                    {
+                        meshFilter.o.gameObject.SetActive(true);
+                        var materials = meshFilter.o.GetComponent<MeshRenderer>().sharedMaterials;
+                        if (EncryptMaterials(meshFilter.o.sharedMesh, materials, decodeShader, m_IgnoredMaterials))
+                        {
+                            meshFilter.o.sharedMesh = KannaProteccMesh.EncryptMesh(meshFilter.o.GetComponent<MeshRenderer>(), meshFilter.o.sharedMesh, _distortRatio, data, m_IgnoredMaterials) ?? meshFilter.o.sharedMesh;
+                        }
+                        else
+                        {
+                            KannaLogger.LogToFile($"Ignoring Encrypt On Generic: {meshFilter.o.gameObject.name} - No Materials Encrypted", LogLocation, KannaLogger.LogType.Warning);
+                        }
+
+                        meshFilter.o.gameObject.SetActive(meshFilter.activeSelf);
                     }
                     else
                     {
-                        KannaLogger.LogToFile($"Ignoring Encrypt On Generic: {meshFilter.o.gameObject.name} - No Materials Encrypted", LogLocation, KannaLogger.LogType.Warning);
+                        KannaLogger.LogToFile($"WTF? MeshFilter Lacks A Renderer! -> {meshFilter.o.name}", LogLocation, KannaLogger.LogType.Error);
                     }
-
-                    meshFilter.o.gameObject.SetActive(meshFilter.activeSelf);
                 }
-                else
-                {
-                    KannaLogger.LogToFile("WTF? MeshFilter Lacks A Renderer! -> " + meshFilter.o.name, LogLocation, KannaLogger.LogType.Error);
-                }
-            }
 
-            KannaLogger.LogToFile($"MeshFilters Done, Processing SkinnedMeshRenderers..", LogLocation);
+                KannaLogger.LogToFile($"MeshFilters Done, Processing SkinnedMeshRenderers..", LogLocation);
 
-            foreach (var skinnedMeshRenderer in skinnedMeshRenderers)
-            {
-                if (skinnedMeshRenderer.o.GetComponent<Cloth>() == null)
+                foreach (var skinnedMeshRenderer in skinnedMeshRenderers)
                 {
-                    skinnedMeshRenderer.o.gameObject.SetActive(true);
-                    var materials = skinnedMeshRenderer.o.sharedMaterials;
-                    if (EncryptMaterials(skinnedMeshRenderer.o.sharedMesh, materials, decodeShader, m_IgnoredMaterials))
+                    if (skinnedMeshRenderer.o.GetComponent<Cloth>() == null)
                     {
-                        skinnedMeshRenderer.o.sharedMesh = KannaProteccMesh.EncryptMesh(skinnedMeshRenderer.o, skinnedMeshRenderer.o.sharedMesh, _distortRatio, data, m_IgnoredMaterials) ?? skinnedMeshRenderer.o.sharedMesh;
+                        skinnedMeshRenderer.o.gameObject.SetActive(true);
+                        var materials = skinnedMeshRenderer.o.sharedMaterials;
+                        if (EncryptMaterials(skinnedMeshRenderer.o.sharedMesh, materials, decodeShader, m_IgnoredMaterials))
+                        {
+                            skinnedMeshRenderer.o.sharedMesh = KannaProteccMesh.EncryptMesh(skinnedMeshRenderer.o, skinnedMeshRenderer.o.sharedMesh, _distortRatio, data, m_IgnoredMaterials) ?? skinnedMeshRenderer.o.sharedMesh;
+                        }
+                        else
+                        {
+                            KannaLogger.LogToFile($"Ignoring Encrypt On Skinned: {skinnedMeshRenderer.o.gameObject.name} - No Materials Encrypted", LogLocation, KannaLogger.LogType.Warning);
+                        }
+
+                        skinnedMeshRenderer.o.gameObject.SetActive(skinnedMeshRenderer.activeSelf);
                     }
                     else
                     {
-                        KannaLogger.LogToFile($"Ignoring Encrypt On Skinned: {skinnedMeshRenderer.o.gameObject.name} - No Materials Encrypted", LogLocation, KannaLogger.LogType.Warning);
+                        KannaLogger.LogToFile($"Ignoring Encrypt On {skinnedMeshRenderer.o.gameObject.name} - Cloth Found.", LogLocation, KannaLogger.LogType.Warning);
                     }
-
-                    skinnedMeshRenderer.o.gameObject.SetActive(skinnedMeshRenderer.activeSelf);
                 }
-                else
+
+                KannaLogger.LogToFile($"SkinnedMeshRenderers Done, Removing Lingering KannaProteccRoot On Encrypted Object..", LogLocation);
+
+                var KannaProteccRoots = encodedGameObject.GetComponentsInChildren<KannaProteccRoot>(true);
+                foreach (var KannaProteccRoot in KannaProteccRoots)
                 {
-                    KannaLogger.LogToFile($"Ignoring Encrypt On {skinnedMeshRenderer.o.gameObject.name} - Cloth Found.", LogLocation, KannaLogger.LogType.Warning);
+                    DestroyImmediate(KannaProteccRoot);
                 }
+
+                KannaLogger.LogToFile($"Done Removing, Disabling Original Avatar Object And Refreshing AssetDatabase..", LogLocation);
+
+                // Disable old for convienence.
+                gameObject.SetActive(false);
+
+                // Force unity to import things
+                AssetDatabase.Refresh();
+
+                KannaLogger.LogToFile($"Done Refreshing, Beginning Obfuscation Stage..", LogLocation);
+
+                IsProtected = true;
+
+                EditorSceneManager.MarkAllScenesDirty();
+
+                // Do Obfuscation
+                var newobj = obfuscator.Obfuscate(encodedGameObject, this);
+
+                KannaLogger.LogToFile($"Done Obfuscating, Disabling Encrypted Object, Saving Assets And Scene, Then Refreshing AssetDatabase.", LogLocation);
+
+                encodedGameObject.SetActive(false); // Temp
+
+                AssetDatabase.SaveAssets();
+
+                // Force unity to import things
+                AssetDatabase.Refresh();
+
+                KannaLogger.LogToFile($"Done Refreshing, Writing Keys To ExpressionParameters", LogLocation);
+
+                WriteBitKeysToExpressions(newobj.GetComponent<VRCAvatarDescriptor>().expressionParameters, true);
+
+                KannaLogger.LogToFile($"Done Writing Keys, Validating FX Controller And Obfuscating Kanna Protecc Layer Within It", LogLocation);
+
+                ValidateAnimatorController(newobj, AssetDatabase.LoadAssetAtPath<AnimatorController>(AssetDatabase.GetAssetPath(newobj.GetComponent<VRCAvatarDescriptor>().baseAnimationLayers.First(o => o.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController)));
+
+                KannaLogger.LogToFile($"Done! Showing Dialog To User.", LogLocation);
+
+                DestroyImmediate(encodedGameObject);
+                newobj.name = newobj.name.Replace("_Encrypted_Obfuscated", "_KannaProteccted");
+
+                EditorSceneManager.MarkAllScenesDirty();
+
+                AssetDatabase.Refresh();
+                AssetDatabase.SaveAssets();
+                EditorSceneManager.SaveOpenScenes();
+
+                EditorUtility.DisplayDialog("Successfully Encrypted!", $"{(string.IsNullOrEmpty(GetComponent<PipelineManager>()?.blueprintId) ? "" : "Keys were automatically written. ")}Your avatar should be ready to upload!", "Okay");
             }
-
-            KannaLogger.LogToFile($"SkinnedMeshRenderers Done, Removing Lingering KannaProteccRoot On Encrypted Object..", LogLocation);
-
-            var KannaProteccRoots = encodedGameObject.GetComponentsInChildren<KannaProteccRoot>(true);
-            foreach (var KannaProteccRoot in KannaProteccRoots)
+            catch (Exception ex)
             {
-                DestroyImmediate(KannaProteccRoot);
+                KannaLogger.LogToFile(ex.ToString(), LogLocation, KannaLogger.LogType.Error);
             }
-
-            KannaLogger.LogToFile($"Done Removing, Disabling Original Avatar Object And Refreshing AssetDatabase..", LogLocation);
-
-            // Disable old for convienence.
-            gameObject.SetActive(false);
-
-            // Force unity to import things
-            AssetDatabase.Refresh();
-
-            KannaLogger.LogToFile($"Done Refreshing, Beginning Obfuscation Stage..", LogLocation);
-
-            IsProtected = true;
-
-            EditorSceneManager.MarkAllScenesDirty();
-
-            // Do Obfuscation
-            var newobj = obfuscator.Obfuscate(encodedGameObject, this);
-
-            KannaLogger.LogToFile($"Done Obfuscating, Disabling Encrypted Object, Saving Assets And Scene, Then Refreshing AssetDatabase.", LogLocation);
-
-            encodedGameObject.SetActive(false); // Temp
-
-            AssetDatabase.SaveAssets();
             
-            // Force unity to import things
-            AssetDatabase.Refresh();
-
-            KannaLogger.LogToFile($"Done Refreshing, Writing Keys To ExpressionParameters", LogLocation);
-
-            WriteBitKeysToExpressions(newobj.GetComponent<VRCAvatarDescriptor>().expressionParameters, true);
-
-            KannaLogger.LogToFile($"Done Writing Keys, Validating FX Controller And Obfuscating Kanna Protecc Layer Within It", LogLocation);
-
-            ValidateAnimatorController(newobj, AssetDatabase.LoadAssetAtPath<AnimatorController>(AssetDatabase.GetAssetPath(newobj.GetComponent<VRCAvatarDescriptor>().baseAnimationLayers.First(o => o.type == VRCAvatarDescriptor.AnimLayerType.FX).animatorController)));
-
-            KannaLogger.LogToFile($"Done! Showing Dialog To User.", LogLocation);
-
-            DestroyImmediate(encodedGameObject);
-            newobj.name = newobj.name.Replace("_Encrypted_Obfuscated", "_KannaProteccted");
-
             KannaLogger.WriteLogsToFile(LogLocation);
-
-            EditorSceneManager.MarkAllScenesDirty();
-
-            AssetDatabase.Refresh();
-            AssetDatabase.SaveAssets();
-            EditorSceneManager.SaveOpenScenes();
-
-            EditorUtility.DisplayDialog("Successfully Encrypted!", $"{(string.IsNullOrEmpty(GetComponent<PipelineManager>()?.blueprintId) ? "" : "Keys were automatically written. ")}Your avatar should be ready to upload!", "Okay");
         }
 
         public static Type GetTypeFromAnyAssembly(string FullName)
@@ -341,9 +336,9 @@ namespace Kanna.Protecc
             KannaLogger.LogToFile($"Getting Type From FullName: {FullName}", LogLocation);
 
             return (from assembly in AppDomain.CurrentDomain.GetAssemblies()
-                    from type in assembly.GetTypes()
-                    where type.FullName == FullName
-                    select type).FirstOrDefault();
+                from type in assembly.GetTypes()
+                where type.FullName == FullName
+                select type).FirstOrDefault();
         }
 
         bool EncryptMaterials(Mesh mesh, Material[] materials, string decodeShader, List<Material> aggregateIgnoredMaterials)
@@ -441,7 +436,7 @@ namespace Kanna.Protecc
 
                         KannaLogger.LogToFile($"Done, Writing Shader File..", LogLocation);
 
-                        shaderPath = shaderPath.Replace(Path.GetExtension(shaderPath), "") + "_Protected.shader";
+                        shaderPath = $"{shaderPath.Replace(Path.GetExtension(shaderPath), "")}_Protected.shader";
 
                         File.WriteAllText(shaderPath, _sb.ToString());
 
@@ -526,7 +521,7 @@ namespace Kanna.Protecc
         {
             KannaLogger.LogToFile($"WriteBitKeysToExpressions Started", KannaProteccRoot.LogLocation);
 
-#if VRC_SDK_VRCSDK3
+            #if VRC_SDK_VRCSDK3
             var descriptor = GetComponent<VRCAvatarDescriptor>();
             if (descriptor == null)
             {
@@ -553,10 +548,10 @@ namespace Kanna.Protecc
                 WriteKeysToSaveFile(DoLog);
             }
 
-#else
+            #else
             Debug.LogError("Can't find VRC SDK?");
             EditorUtility.DisplayDialog("Can't find VRC SDK?", "You need to isntall VRC SDK.", "Okay");
-#endif
+            #endif
         }
 
         public class KannaProteccKeysData
@@ -567,7 +562,7 @@ namespace Kanna.Protecc
 
         public void WriteKeysToSaveFile(bool DoLog = false)
         {
-#if VRC_SDK_VRCSDK3
+            #if VRC_SDK_VRCSDK3
             var pipelineManager = GetComponent<PipelineManager>();
             if (pipelineManager == null)
             {
@@ -646,10 +641,10 @@ namespace Kanna.Protecc
             if (DoLog)
                 EditorUtility.DisplayDialog("Successfully Wrote Keys!", "Your avatar should now just work in VRChat. If you accidentally hit 'Reset Avatar' in VRC 3.0 menu, you need to click Write Keys again.", "Okay");
 
-#else
+            #else
             Debug.LogError("Can't find VRC SDK?");
             EditorUtility.DisplayDialog("Can't find VRC SDK?", "You need to isntall VRC SDK.", "Okay");
-#endif
+            #endif
         }
 
         [Serializable]
@@ -668,7 +663,7 @@ namespace Kanna.Protecc
         void Reset()
         {
             GenerateNewKey();
-            _vrcSavedParamsPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\AppData\\LocalLow\\VRChat\\VRChat\\LocalAvatarData\\";
+            _vrcSavedParamsPath = $"{Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}\\AppData\\LocalLow\\VRChat\\VRChat\\LocalAvatarData\\";
         }
 
 
@@ -694,6 +689,7 @@ namespace Kanna.Protecc
             {
                 //RemoveBitKeys(parameters);
             }
+
             KannaLogger.LogToFile($"Adding BitKeys To Parameters: {parameters.name}", LogLocation);
 
             var paramList = parameters.parameters.ToList();
@@ -763,128 +759,73 @@ namespace Kanna.Protecc
             _KannaProteccController.DeleteKannaProteccObjectsFromController(GetAnimatorController());
         }
 
-        [SerializeField]
-        public string MissingEssentialsLabel_Localized = "Your avatar is missing essentials for function, such as a FX controller, expressionsMenu, expressionsParameters or FX Controller in main animator component.";
-        
-        [SerializeField]
-        public string LingeringAvaCryptLabel_Localized = "Your avatar has lingering AvaCrypt on it. This will break Kanna Protecc. Kanna Protecc will not allow interaction until this is fixed.";
-        
-        [SerializeField]
-        public string AutoFixLabel_Localized = "Auto-Fix";
-        
-        [SerializeField]
-        public string AutoFixLingeringAvaCryptTooltip_Localized = "Attempts to automatically fix this issue, removing AvaCrypt from your avatar.";
+        [SerializeField] public string MissingEssentialsLabel_Localized = "Your avatar is missing essentials for Kanna Protecc to function, such as a FX controller, expressionsMenu, expressionsParameters or FX Controller in main animator component.";
 
-        [SerializeField]
-        public string ExcludeObjectsLabel_Localized = "Exclude Objects From Renaming";
-        [SerializeField]
-        public string ExcludeParamsLabel_Localized = "Exclude Parameters From Renaming";
-        [SerializeField]
-        public string ExcludeAnimsLabel_Localized = "Exclude Animator Controllers From Obfuscation";
+        [SerializeField] public string LingeringAvaCryptLabel_Localized = "Your avatar has lingering AvaCrypt on it. This will break Kanna Protecc. Kanna Protecc will not allow interaction until this is fixed.";
+
+        [SerializeField] public string AutoFixLabel_Localized = "Auto-Fix";
+
+        [SerializeField] public string AutoFixLingeringAvaCryptTooltip_Localized = "Attempts to automatically fix this issue, removing AvaCrypt from your avatar.";
+
+        [SerializeField] public string ExcludeObjectsLabel_Localized = "Exclude Objects From Renaming";
+        [SerializeField] public string ExcludeParamsLabel_Localized = "Exclude Parameters From Renaming";
+        [SerializeField] public string ExcludeAnimsLabel_Localized = "Exclude Animator Controllers From Obfuscation";
 
         // -- \\
 
-        [SerializeField]
-        public string AdditionalMaterials_Localized = "Additional Materials (Such As Material Swaps)";
-        [SerializeField]
-        public string AdditionalMaterialsTooltip_Localized = "This lets you specify additional materials to have the Kanna Protecc code injected into when you click 'Protecc Avatar'. This will let you encrypt materials used in material swaps.";
-        [SerializeField]
-        public string IgnoredMaterials_Localized = "Ignored Materials";
-        [SerializeField]
-        public string IgnoredMaterialsTooltip_Localized = "These materials will be ignored by Kanna Protecc. If a mesh contains other materials that are not ignored it will still be encrypted.";
+        [SerializeField] public string AdditionalMaterials_Localized = "Additional Materials (Such As Material Swaps)";
+        [SerializeField] public string AdditionalMaterialsTooltip_Localized = "This lets you specify additional materials to have the Kanna Protecc code injected into when you click 'Protecc Avatar'. This will let you encrypt materials used in material swaps.";
+        [SerializeField] public string IgnoredMaterials_Localized = "Ignored Materials";
+        [SerializeField] public string IgnoredMaterialsTooltip_Localized = "These materials will be ignored by Kanna Protecc. If a mesh contains other materials that are not ignored it will still be encrypted.";
 
         // -- \\
 
-        [SerializeField]
-        public string DiscordMessage_Localized = "Visit my Discord for help!";
-        [SerializeField]
-        public string UILanguage_Localized = "UI Language";
-        [SerializeField]
-        public string ProteccAvatar_Localized = "Protecc Avatar";
-        [SerializeField]
-        public string CloseVRCToEncrypt_Localized = "Close VRChat To Encrypt";
-        [SerializeField]
-        public string UnproteccAvatar_Localized = "Un-Protecc Avatar";
-        [SerializeField]
-        public string ProteccFromRippersTooltip_Localized = "Protecc's your avatar from rippers.";
-        [SerializeField]
-        public string OriginalFormTooltip_Localized = "Returns your avatar to its original form.";
-        [SerializeField]
-        public string WriteKeys_Localized = "Write Keys";
-        [SerializeField]
-        public string CloseVRChatToWriteKeys_Localized = "Close VRChat To Write Keys";
-        [SerializeField]
-        public string WriteKeysTooltip_Localized = "Write your keys to saved attributes!";
-        [SerializeField]
-        public string EncryptionIntensityLabel_Localized = "Encryption Intensity:";
-        [SerializeField]
-        public string EncryptionIntensityInfoLabel_Localized = "Set high enough so your encrypted mesh is visually wrecked, the higher the value, the more secure. Default = 5";
-        [SerializeField]
-        public string VRCSavedParamtersPathLabel_Localized = "VRC Saved Paramters Path";
-        [SerializeField]
-        public string EnsureLocalAvatarPathLabel_Localized = "Ensure this is pointing to your LocalAvatarData folder!";
-        [SerializeField]
-        public string Materials_Localized = "Materials";
-        [SerializeField]
-        public string MaterialsTooltip_Localized  = "By default Kanna Protecc will inject its code into any Supported materials on this avatar. Here you can adjust that behaviour to include or remove some materials.";
-        [SerializeField]
-        public string AutoDetect_Localized = "Auto Detect";
-        [SerializeField]
-        public string AutoDetectMaterialsTooltip_Localized = "Attempts to automatically detect additional materials, such as material swaps.";
-        [SerializeField]
-        public string UnlockBitKeys_Localized = "Unlock BitKeys";
-        [SerializeField]
-        public string UnlockBitKeysTooltip_Localized = "Allow changes to key selections";
-        [SerializeField]
-        public string LockBitKeys_Localized = "Lock BitKeys";
-        [SerializeField]
-        public string LockBitKeysTooltip_Localized = "Prevent changes to key selections";
-        [SerializeField]
-        public string BitKeysLabel_Localized = "BitKeys";
-        [SerializeField]
-        public string EncryptTheMeshLabel_Localized = "These are the keys used to encrypt the mesh.";
-        [SerializeField]
-        public string HiddenToPreventLabel_Localized = "Hidden To Prevent Accidentally Showing To Others - Unlock to show.";
-        [SerializeField]
-        public string GenerateNewKeys_Localized = "Generate New Keys";
-        [SerializeField]
-        public string GenerateNewKeysTooltip_Localized = "Generate new key overriding old one. Will need to write keys again!";
-        [SerializeField]
-        public string DebugAndFix_Localized = "Debug And Fixing A Broken Avatar";
-        [SerializeField]
-        public string DeleteKannaProteccObjects_Localized = "Delete Kanna Protecc Objects From Controller";
-        [SerializeField]
-        public string DeleteKannaProteccObjectsTooltip_Localized = "Deletes all the objects Kanna Protecc wrote to your controller. Try running this if something gets weird with encrypting";
-        [SerializeField]
-        public string ForceUnprotecc_Localized = "Force Un-Protecc";
-        [SerializeField]
-        public string ForceUnprotecTooltip_Localized = "Forces Un-Protecc in case of something going wrong.";
-        [SerializeField]
-        public string CreateTestLog_Localized = "Create Test Log";
-        [SerializeField]
-        public string CreateTestLogTooltip_Localized = "Ignore Pls Lol";
-        [SerializeField]
-        public string OpenLatestLog_Localized = "Open Latest Log";
-        [SerializeField]
-        public string OpenLatestLogTooltip_Localized = "Opens The Latest Kanna Protecc Log";
-        [SerializeField]
-        public string BitKeysLengthLabelField_Localized = "BitKeys Length:";
-        [SerializeField]
-        public string ObfuscatorSettingsLabelField_Localized = "Obfuscator Settings";
-        [SerializeField]
-        public string ObjectNameObfuscation_Localized = "Object Name Obfuscation";
-        [SerializeField]
-        public string AutoExcludeVRCFuryObjects_Localized = "Auto-Exclude VRCFury Objects";
-        [SerializeField]
-        public string AutoExcludeVRCFuryObjectsTooltip_Localized = "Tries to detect typical VRCFury objects and excludes them.";
-        [SerializeField]
-        public string ParameterNameObfuscationRegEx_Localized = "Parameter Name Obfuscation (RegEx)";
-        [SerializeField]
-        public string AutoDetectParamsTooltip_Localized = "Attempts to automatically detect parameters for OSC for well known projects like VRCFT.";
-        [SerializeField]
-        public string AutoDetectAnimatorsTooltip_Localized = "Attempts to automatically detect animators needing excluded, like GoGoLoco.";
+        [SerializeField] public string DiscordMessage_Localized = "Visit my Discord for help!";
+        [SerializeField] public string UILanguage_Localized = "UI Language";
+        [SerializeField] public string ProteccAvatar_Localized = "Protecc Avatar";
+        [SerializeField] public string CloseVRCToEncrypt_Localized = "Close VRChat To Encrypt";
+        [SerializeField] public string UnproteccAvatar_Localized = "Un-Protecc Avatar";
+        [SerializeField] public string ProteccFromRippersTooltip_Localized = "Protecc's your avatar from rippers.";
+        [SerializeField] public string OriginalFormTooltip_Localized = "Returns your avatar to its original form.";
+        [SerializeField] public string WriteKeys_Localized = "Write Keys";
+        [SerializeField] public string CloseVRChatToWriteKeys_Localized = "Close VRChat To Write Keys";
+        [SerializeField] public string WriteKeysTooltip_Localized = "Write your keys to saved attributes!";
+        [SerializeField] public string EncryptionIntensityLabel_Localized = "Encryption Intensity:";
+        [SerializeField] public string EncryptionIntensityInfoLabel_Localized = "Set high enough so your encrypted mesh is visually wrecked, the higher the value, the more secure. Default = 5";
+        [SerializeField] public string VRCSavedParamtersPathLabel_Localized = "VRC Saved Paramters Path";
+        [SerializeField] public string EnsureLocalAvatarPathLabel_Localized = "Ensure this is pointing to your LocalAvatarData folder!";
+        [SerializeField] public string Materials_Localized = "Materials";
+        [SerializeField] public string MaterialsTooltip_Localized = "By default Kanna Protecc will inject its code into any Supported materials on this avatar. Here you can adjust that behaviour to include or remove some materials.";
+        [SerializeField] public string AutoDetect_Localized = "Auto Detect";
+        [SerializeField] public string AutoDetectMaterialsTooltip_Localized = "Attempts to automatically detect additional materials, such as material swaps.";
+        [SerializeField] public string UnlockBitKeys_Localized = "Unlock BitKeys";
+        [SerializeField] public string UnlockBitKeysTooltip_Localized = "Allow changes to key selections";
+        [SerializeField] public string LockBitKeys_Localized = "Lock BitKeys";
+        [SerializeField] public string LockBitKeysTooltip_Localized = "Prevent changes to key selections";
+        [SerializeField] public string BitKeysLabel_Localized = "BitKeys";
+        [SerializeField] public string EncryptTheMeshLabel_Localized = "These are the keys used to encrypt the mesh.";
+        [SerializeField] public string HiddenToPreventLabel_Localized = "Hidden To Prevent Accidentally Showing To Others - Unlock to show.";
+        [SerializeField] public string GenerateNewKeys_Localized = "Generate New Keys";
+        [SerializeField] public string GenerateNewKeysTooltip_Localized = "Generate new key overriding old one. Will need to write keys again!";
+        [SerializeField] public string DebugAndFix_Localized = "Debug And Fixing A Broken Avatar";
+        [SerializeField] public string DeleteKannaProteccObjects_Localized = "Delete Kanna Protecc Objects From Controller";
+        [SerializeField] public string DeleteKannaProteccObjectsTooltip_Localized = "Deletes all the objects Kanna Protecc wrote to your controller. Try running this if something gets weird with encrypting";
+        [SerializeField] public string ForceUnprotecc_Localized = "Force Un-Protecc";
+        [SerializeField] public string ForceUnprotecTooltip_Localized = "Forces Un-Protecc in case of something going wrong.";
+        [SerializeField] public string CreateTestLog_Localized = "Create Test Log";
+        [SerializeField] public string CreateTestLogTooltip_Localized = "Ignore Pls Lol";
+        [SerializeField] public string OpenLatestLog_Localized = "Open Latest Log";
+        [SerializeField] public string OpenLatestLogTooltip_Localized = "Opens The Latest Kanna Protecc Log";
+        [SerializeField] public string BitKeysLengthLabelField_Localized = "BitKeys Length:";
+        [SerializeField] public string ObfuscatorSettingsLabelField_Localized = "Obfuscator Settings";
+        [SerializeField] public string ObjectNameObfuscation_Localized = "Object Name Obfuscation";
+        [SerializeField] public string AutoExcludeVRCFuryObjects_Localized = "Auto-Exclude VRCFury Objects";
+        [SerializeField] public string AutoExcludeVRCFuryObjectsTooltip_Localized = "Tries to detect typical VRCFury objects and excludes them.";
+        [SerializeField] public string ParameterNameObfuscationRegEx_Localized = "Parameter Name Obfuscation (RegEx)";
+        [SerializeField] public string AutoDetectParamsTooltip_Localized = "Attempts to automatically detect parameters for OSC for well known projects like VRCFT.";
+        [SerializeField] public string AutoDetectAnimatorsTooltip_Localized = "Attempts to automatically detect animators needing excluded, like GoGoLoco.";
 
-#endif
+        #endif
     }
 
     public static class KannaExtensions
@@ -943,7 +884,7 @@ namespace Kanna.Protecc
             return absolutePath;
         }
 
-#if UNITY_EDITOR
+        #if UNITY_EDITOR
         public static List<string> FindAllShaderIncludes(this Shader shader)
         {
             var FoundIncludes = new List<string>();
@@ -979,7 +920,7 @@ namespace Kanna.Protecc
 
             return FoundIncludes;
         }
-#endif
+        #endif
     }
 
     // Credit: Poiyomi & Thry - Embedded due to the want of no external dependencies.
@@ -1035,8 +976,8 @@ namespace Kanna.Protecc
             if (haystack == null || needle == null)
                 throw new ArgumentNullException();
             if (needle.Length == 0)
-                return 0;//empty strings are everywhere!
-            if (needle.Length == 1)//can't beat just spinning through for it
+                return 0; //empty strings are everywhere!
+            if (needle.Length == 1) //can't beat just spinning through for it
             {
                 var c = needle[0];
                 for (var idx = 0; idx != haystack.Length; ++idx)
@@ -1044,6 +985,7 @@ namespace Kanna.Protecc
                         return idx;
                 return -1;
             }
+
             var m = 0;
             var i = 0;
             var T = KmpTable(needle);
@@ -1052,7 +994,7 @@ namespace Kanna.Protecc
                 if (needle[i] == haystack[m + i])
                 {
                     if (i == needle.Length - 1)
-                        return m == needle.Length ? -1 : m;//match -1 = failure to find conventional in .NET
+                        return m == needle.Length ? -1 : m; //match -1 = failure to find conventional in .NET
                     ++i;
                 }
                 else
@@ -1061,8 +1003,10 @@ namespace Kanna.Protecc
                     i = T[i] > -1 ? T[i] : 0;
                 }
             }
+
             return -1;
         }
+
         private static int[] KmpTable(string sought)
         {
             var table = new int[sought.Length];
@@ -1084,10 +1028,11 @@ namespace Kanna.Protecc
 
 [Serializable]
 public class StringStringSerializableDictionary : SerializableDictionary<string, string>
-{ }
+{
+}
 
 [Serializable]
-public class SerializableDictionary<TKey, TValue> : IDictionary<TKey, TValue>//, ISerializationCallbackReceiver
+public class SerializableDictionary<TKey, TValue> : IDictionary<TKey, TValue> //, ISerializationCallbackReceiver
 {
     [SerializeField] private List<TKey> keys = new List<TKey>();
     [SerializeField] private List<TValue> values = new List<TValue>();
@@ -1197,6 +1142,7 @@ public class SerializableDictionary<TKey, TValue> : IDictionary<TKey, TValue>//,
             value = default;
             return false;
         }
+
         value = values[index];
         return true;
     }
@@ -1300,6 +1246,7 @@ public class KannaLogger
     }
 
     private static int CollapsibleID;
+
     private static string CreateLogHTML(LogEntry log)
     {
         var output = $"\t<div class=\"AvatarInformation{log.type}\">\r\n\t\t\t<h2>[{log.time}]: {log.text}</h2>\r\n\t\t\t<div class=\"wrap-collabsible\">\r\n\t\t\t\t<input id=\"collapsible{CollapsibleID}\" class=\"toggle\" type=\"checkbox\">\r\n\t\t\t\t\t<label for=\"collapsible{CollapsibleID}\" class=\"lbl-toggle\">Stack Trace</label>\r\n\t\t\t\t\t<div class=\"collapsible-content\">\r\n\t\t\t\t\t\t<div class=\"content-inner\">\r\n\t\t\t\t\t\t<p>{JsonConvert.SerializeObject(log.Stack, Formatting.Indented).Replace("\r\n", "</br>")}</p>\r\n\t\t\t\t\t\t</div>\r\n\t\t\t\t\t</div>\r\n\t\t\t</div>\r\n\t\t\t</br>\t\t\r\n\t\t</div>\r\n\t";

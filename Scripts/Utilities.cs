@@ -12,13 +12,14 @@ public class Utilities
 {
     private static int Length = 1;
 
-    public static string GenerateRandomUniqueName(bool safeNaming, bool canHaveSpaces = false)
+    public static string GenerateRandomUniqueName(bool safeNaming)
     {
-        var str = "Kanna" + ((safeNaming || canHaveSpaces) ? $"_{GUID.Generate()}" : "");
+        var str = $"Kanna{((safeNaming) ? $"_{GUID.Generate()}" : "")}";
 
         if (!safeNaming)
         {
-            str = str.PadRight(Length, '\u200B'); // \u200B = ZWSP
+            // \u200B = ZWSP
+            str += new string('\u2008', Length);
 
             Length++;
         }
